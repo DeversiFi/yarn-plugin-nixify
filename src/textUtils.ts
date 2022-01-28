@@ -46,7 +46,7 @@ export const renderTmpl = (
   let result = tmpl;
   for (const [name, value] of Object.entries(vars)) {
     if (typeof value === "string") {
-      result = result.replace(`@@${name}@@`, value);
+      result = result.replace(new RegExp(`@@${name}@@`, 'g'), value);
     }
     if (typeof value === "boolean") {
       const lines = result.split("\n");
