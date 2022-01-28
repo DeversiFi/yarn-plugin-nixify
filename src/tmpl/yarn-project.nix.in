@@ -7,7 +7,18 @@
 let
 
   yarnPath = ./@@YARN_PATH@@;
-  lockfile = ./@@LOCKFILE@@;
+  yarnRelativePathString = "./@@YARN_PATH@@";
+  yarnLock = ./@@LOCKFILE@@;
+  packageJson = ./package.json;
+  yarnrcYaml = builtins.path {
+    path = ./.yarnrc.yml;
+    name = "yarnrc.yml";
+  };
+  yarnPlugins = builtins.path {
+    path = ./.yarn/plugins;
+    name = "yarnPlugins";
+  };
+
   cacheFolder = @@CACHE_FOLDER@@;
 
   # Call overrideAttrs on a derivation if a function is provided.
@@ -29,6 +40,21 @@ let
       }
     '';
   };
+
+  setupProjectFiles = ''
+    # package.json cannot be symlinked since when executing "yarn run ...", yarn
+    # will follow the symlink and consider the location of the original file as
+    # the projects root directory.
+    cp ${packageJson} package.json
+    ln -s ${yarnLock} yarn.lock
+    ln -s ${yarnrcYaml} .yarnrc.yml
+
+    mkdir -p .yarn
+    ln -s ${yarnPlugins} .yarn/plugins
+
+    mkdir -p $(dirname ${yarnRelativePathString})
+    ln -s ${yarnPath} ${yarnRelativePathString}
+  '';
 
   checkSandboxPathExists = writeShellScriptBin "check-sandbox-file-exists" ''
     set -ueo pipefail
@@ -84,8 +110,6 @@ let
       ${exportEnvVarsFromFilesIfAny secretsEnvVars}
 
       home=$TMP
-      yarn_cache_folder=$home/cache
-      mkdir -p $yarn_cache_folder
 
       ${
         if netrcFilePath != null
@@ -93,16 +117,29 @@ let
         else ""
       }
 
-      cd "$src"
-      HOME="$home" yarn_cache_folder="$yarn_cache_folder" CI=1 \
-         node '${yarnPath}' nixify fetch-one $locator
+      build_dir=$TMP/build
+      mkdir -p $build_dir
+      cd $build_dir
+
+      ${setupProjectFiles}
+
+      mkdir -p ${cacheFolder}
+      YARN_CACHE_FOLDER=$(pwd)/${cacheFolder}
+
+      HOME="$home" \
+        YARN_CACHE_FOLDER="$YARN_CACHE_FOLDER" \
+        CI=1 \
+        node '${yarnPath}' nixify fetch-one $locator
+
       # Because we change the cache dir, Yarn may generate a different name.
-      mv "$yarn_cache_folder/$(sed 's/-[^-]*\.[^-]*$//' <<< "$outputFilename")"-* $out
+      output_filename_stripped=$(sed 's/-[^-]*\.[^-]*$//' <<< "$outputFilename")
+
+      mv "$YARN_CACHE_FOLDER/$output_filename_stripped"-* $out
     '';
   in lib.mapAttrs (locator: { filename, sha512 }: stdenv.mkDerivation {
-    inherit src builder locator;
-    name = lib.strings.sanitizeDerivationName locator;
-    buildInputs = [ nodejs git cacert ];
+    inherit builder locator;
+    # We need .zip extension since without pnp will not look inside the archive.
+    name = lib.strings.sanitizeDerivationName locator + ".zip";
     buildInputs = [ nodejs ];
     nativeBuildInputs = [ git cacert linkNetrcFile checkSandboxPathExists ];
     outputFilename = filename;
@@ -112,9 +149,9 @@ let
   }) cacheEntries;
 
   # Create a shell snippet to copy dependencies from a list of derivations.
-  mkCacheBuilderForDrvs = drvs:
+  mkCacheBuilderForDrvs = symlinkPackages: drvs:
     writeText "collect-cache.sh" (lib.concatMapStrings (drv: ''
-      cp ${drv} '${drv.outputFilename}'
+      ${if symlinkPackages then "ln -s" else "cp"} ${drv} '${drv.outputFilename}'
     '') drvs);
 
 #@@ IF NEED_ISOLATED_BUILD_SUPPRORT
@@ -122,7 +159,7 @@ let
   mkCacheBuilderForLocators = let
     pickCacheDrvs = map (locator: cacheDrvs.${locator});
   in locators:
-    mkCacheBuilderForDrvs (pickCacheDrvs locators);
+    mkCacheBuilderForDrvs false (pickCacheDrvs locators);
 
   # Create a derivation that builds a node-pre-gyp module in isolation.
   mkIsolatedBuild = { pname, version, reference, locators }: stdenv.mkDerivation (drvCommon // {
@@ -130,16 +167,21 @@ let
     phases = [ "buildPhase" "installPhase" ];
 
     buildPhase = ''
+      runHook preBuild
+
       mkdir -p .yarn/cache
       pushd .yarn/cache > /dev/null
       source ${mkCacheBuilderForLocators locators}
       popd > /dev/null
 
       echo '{ "dependencies": { "${pname}": "${reference}" } }' > package.json
-      install -m 0600 ${lockfile} ./yarn.lock
-      export yarn_global_folder="$TMP"
-      export YARN_ENABLE_IMMUTABLE_INSTALLS=false
-      yarn --immutable-cache
+      install -m 0600 ${yarnLock} ./yarn.lock
+
+      yarn_global_folder="$TMP" \
+        YARN_ENABLE_IMMUTABLE_INSTALLS=false \
+        yarn --immutable-cache
+
+      runHook postBuild
     '';
 
     installPhase = ''
@@ -154,19 +196,20 @@ let
   });
 #@@ ENDIF NEED_ISOLATED_BUILD_SUPPRORT
 
-  # Main project derivation.
-  project = stdenv.mkDerivation (drvCommon // {
-    inherit src;
-    name = @@PROJECT_NAME@@;
+  # Derivation with content of .yarn/cache and .pnp.cjs
+  deps = stdenv.mkDerivation (drvCommon // {
+    name = "@@PROJECT_NAME@@-deps";
     # Disable Nixify plugin to save on some unnecessary processing.
     yarn_enable_nixify = "false";
+    nativeBuildInputs = [gnused];
 
     configurePhase = ''
+      ${setupProjectFiles}
+
       # Copy over the Yarn cache.
-      rm -fr '${cacheFolder}'
-      mkdir -p '${cacheFolder}'
+      mkdir -p ${cacheFolder}
       pushd '${cacheFolder}' > /dev/null
-      source ${mkCacheBuilderForDrvs (lib.attrValues cacheDrvs)}
+      source ${mkCacheBuilderForDrvs symlinkPackages (lib.attrValues cacheDrvs)}
       popd > /dev/null
 
       # Yarn may need a writable home directory.
@@ -185,15 +228,104 @@ let
 @@ISOLATED_INTEGRATION@@
 
       # Run normal Yarn install to complete dependency installation.
-      yarn install --immutable --immutable-cache
+      # YARN_VIRTUAL_FOLDER is set this way to make it easy to replace in
+      # installPhase below, so that in the end virtual paths resolve to
+      # packages in nix store.
+      YARN_CACHE_FOLDER=$(pwd)/${cacheFolder} \
+        YARN_VIRTUAL_FOLDER=$(pwd)/__virtual__ \
+        yarn install --immutable --immutable-cache
 
       runHook postConfigure
     '';
 
-    buildPhase = ''
-      runHook preBuild
-      runHook postBuild
+    dontUnpack = true;
+    dontBuild = true;
+
+    installPhase = ''
+      runHook preInstall
+
+      # This needs nested under /nix/store at the same depth as the the location
+      # of the source in the output of project derivation so that
+      # relative_path_to_nix_store is valid from the final source.
+      output_dir=$out/libexec/deps
+      mkdir -p $output_dir
+
+      mkdir -p $output_dir/.yarn
+      test -d .yarn/cache && mv .yarn/cache $output_dir/.yarn/cache
+      test -d .yarn/unplugged && mv .yarn/unplugged $output_dir/.yarn/unplugged
+
+      mv .pnp.cjs $output_dir/.pnp.cjs
+
+      cd $output_dir
+
+      # Replace references from .pnp.cjs to symlinks in .yarn/cache with
+      # relative paths. Needed because of: https://github.com/yarnpkg/berry/issues/3514
+
+      # sed helpers
+      escape_sed_replacement () {
+        echo "$1" | sed -e 's/[\/&]/\\&/g'
+      }
+
+      escape_sed_pattern () {
+        echo "$1" | sed -e 's/[]\/$*.^[]/\\&/g'
+      }
+      echo >&2 "fixup paths in .pnp.cjs"
+
+      # TODO: this would be best done with a plugin which would resolve symlinks
+      #   to actual store paths during yarn install.
+      relative_path_to_nix_store=$(realpath --relative-to=. /nix/store)
+
+      unplugged_path_relative_to_nix_store=$(realpath --relative-to=/nix/store $output_dir/.yarn/unplugged)
+      echo unplugged_path_relative_to_nix_store: $unplugged_path_relative_to_nix_store
+
+      sed -E -i \
+        -e "s/$(escape_sed_pattern './.yarn/cache')/$(escape_sed_replacement "$relative_path_to_nix_store")/g" \
+        -e "s/$(escape_sed_pattern './.yarn/unplugged')/$(escape_sed_replacement "''${relative_path_to_nix_store}/''${unplugged_path_relative_to_nix_store}")/g" \
+        -e "s/$(escape_sed_pattern '0/.yarn/cache')/0/g" \
+        -e "s/$(escape_sed_pattern './__virtual__')/$(escape_sed_replacement "$relative_path_to_nix_store/__virtual__")/g" \
+        .pnp.cjs
+
+      for path in .yarn/cache/*; do
+        # Skip empty
+        test -z "$path" && continue
+
+        file_name_in_pnp=$(basename "$path")
+        file_name=$(basename $(realpath --relative-to=. "$path"))
+
+        # echo >&2 "replace for path:   $path"
+        # echo >&2 "  file_name_in_pnp: $file_name_in_pnp"
+        # echo >&2 "  with file_name:   $file_name"
+
+        sed -i "s/$(escape_sed_pattern "$file_name_in_pnp")/$(escape_sed_replacement "$file_name")/" .pnp.cjs
+      done
+
+      mkdir ../pnp
+      mv .pnp.cjs ../pnp
+      runHook postInstall
     '';
+
+    passthru = {
+      inherit nodejs;
+    };
+  });
+
+  # Main project derivation.
+  project = stdenv.mkDerivation (drvCommon // {
+    inherit src;
+    name = "@@PROJECT_NAME@@";
+
+    configurePhase = ''
+      ${setupProjectFiles}
+      # We can't symlink this one since it doesn't work as a symlink due to
+      # packageLocations within it being relative path to this files locations
+      # real location, therefore it needs to be located at the root of the
+      # project for relative and workspace scoped imports to work.
+      cp ${deps}/libexec/pnp/.pnp.cjs .pnp.cjs
+
+      runHook postConfigure
+    '';
+
+    dontBuild = true;
 
     installPhase = ''
       runHook preInstall
@@ -204,6 +336,7 @@ let
 
       mv $PWD "$out/libexec/$name"
       cd "$out/libexec/$name"
+
       # Invoke a plugin internal command to setup binaries.
       yarn nixify install-bin $out/bin
 

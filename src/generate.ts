@@ -270,7 +270,7 @@ export default async (project: Project, cache: Cache, report: Report) => {
   const ident = project.topLevelWorkspace.manifest.name;
   const projectName = ident ? structUtils.stringifyIdent(ident) : `workspace`;
   const projectExpr = renderTmpl(projectExprTmpl, {
-    PROJECT_NAME: json(projectName),
+    PROJECT_NAME: projectName,
     YARN_PATH: yarnPathRel,
     LOCKFILE: lockfileRel,
     CACHE_FOLDER: json(cacheFolder),
