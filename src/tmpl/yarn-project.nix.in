@@ -201,9 +201,12 @@ let
     name = "@@PROJECT_NAME@@-deps";
     # Disable Nixify plugin to save on some unnecessary processing.
     yarn_enable_nixify = "false";
-    nativeBuildInputs = [gnused];
 
     configurePhase = ''
+      output_dir=$out/libexec/deps
+      mkdir -p $output_dir
+      cd $output_dir
+
       ${setupProjectFiles}
 
       # Copy over the Yarn cache.
@@ -211,6 +214,17 @@ let
       pushd '${cacheFolder}' > /dev/null
       source ${mkCacheBuilderForDrvs symlinkPackages (lib.attrValues cacheDrvs)}
       popd > /dev/null
+
+@@ISOLATED_INTEGRATION@@
+
+      runHook postConfigure
+    '';
+
+    dontUnpack = true;
+    dontBuild = true;
+
+    installPhase = ''
+      runHook preInstall
 
       # Yarn may need a writable home directory.
       export yarn_global_folder="$TMP"
@@ -225,82 +239,13 @@ let
       # hardcoded values.
       runHook preConfigure
 
-@@ISOLATED_INTEGRATION@@
-
       # Run normal Yarn install to complete dependency installation.
       # YARN_VIRTUAL_FOLDER is set this way to make it easy to replace in
       # installPhase below, so that in the end virtual paths resolve to
       # packages in nix store.
       YARN_CACHE_FOLDER=$(pwd)/${cacheFolder} \
-        YARN_VIRTUAL_FOLDER=$(pwd)/__virtual__ \
         yarn install --immutable --immutable-cache
 
-      runHook postConfigure
-    '';
-
-    dontUnpack = true;
-    dontBuild = true;
-
-    installPhase = ''
-      runHook preInstall
-
-      # This needs nested under /nix/store at the same depth as the the location
-      # of the source in the output of project derivation so that
-      # relative_path_to_nix_store is valid from the final source.
-      output_dir=$out/libexec/deps
-      mkdir -p $output_dir
-
-      mkdir -p $output_dir/.yarn
-      test -d .yarn/cache && mv .yarn/cache $output_dir/.yarn/cache
-      test -d .yarn/unplugged && mv .yarn/unplugged $output_dir/.yarn/unplugged
-
-      mv .pnp.cjs $output_dir/.pnp.cjs
-
-      cd $output_dir
-
-      # Replace references from .pnp.cjs to symlinks in .yarn/cache with
-      # relative paths. Needed because of: https://github.com/yarnpkg/berry/issues/3514
-
-      # sed helpers
-      escape_sed_replacement () {
-        echo "$1" | sed -e 's/[\/&]/\\&/g'
-      }
-
-      escape_sed_pattern () {
-        echo "$1" | sed -e 's/[]\/$*.^[]/\\&/g'
-      }
-      echo >&2 "fixup paths in .pnp.cjs"
-
-      # TODO: this would be best done with a plugin which would resolve symlinks
-      #   to actual store paths during yarn install.
-      relative_path_to_nix_store=$(realpath --relative-to=. /nix/store)
-
-      unplugged_path_relative_to_nix_store=$(realpath --relative-to=/nix/store $output_dir/.yarn/unplugged)
-      echo unplugged_path_relative_to_nix_store: $unplugged_path_relative_to_nix_store
-
-      sed -E -i \
-        -e "s/$(escape_sed_pattern './.yarn/cache')/$(escape_sed_replacement "$relative_path_to_nix_store")/g" \
-        -e "s/$(escape_sed_pattern './.yarn/unplugged')/$(escape_sed_replacement "''${relative_path_to_nix_store}/''${unplugged_path_relative_to_nix_store}")/g" \
-        -e "s/$(escape_sed_pattern '0/.yarn/cache')/0/g" \
-        -e "s/$(escape_sed_pattern './__virtual__')/$(escape_sed_replacement "$relative_path_to_nix_store/__virtual__")/g" \
-        .pnp.cjs
-
-      for path in .yarn/cache/*; do
-        # Skip empty
-        test -z "$path" && continue
-
-        file_name_in_pnp=$(basename "$path")
-        file_name=$(basename $(realpath --relative-to=. "$path"))
-
-        # echo >&2 "replace for path:   $path"
-        # echo >&2 "  file_name_in_pnp: $file_name_in_pnp"
-        # echo >&2 "  with file_name:   $file_name"
-
-        sed -i "s/$(escape_sed_pattern "$file_name_in_pnp")/$(escape_sed_replacement "$file_name")/" .pnp.cjs
-      done
-
-      mkdir ../pnp
-      mv .pnp.cjs ../pnp
       runHook postInstall
     '';
 
@@ -314,13 +259,16 @@ let
     inherit src;
     name = "@@PROJECT_NAME@@";
 
+    nativeBuildInputs = [gnused];
+    depsPath = "${deps}/libexec/deps";
+
     configurePhase = ''
       ${setupProjectFiles}
       # We can't symlink this one since it doesn't work as a symlink due to
       # packageLocations within it being relative path to this files locations
       # real location, therefore it needs to be located at the root of the
       # project for relative and workspace scoped imports to work.
-      cp ${deps}/libexec/pnp/.pnp.cjs .pnp.cjs
+      cp $depsPath/.pnp.cjs .pnp.cjs
 
       runHook postConfigure
     '';
@@ -330,15 +278,34 @@ let
     installPhase = ''
       runHook preInstall
 
-      mkdir -p $out/libexec $out/bin
+      app_dir=$out/libexec/$name
+      bin_dir=$out/bin
+
+      mkdir -p $(dirname $app_dir) $out/bin
 
       # Move the entire project to the output directory.
+      mv $PWD $app_dir
+      cd $app_dir
 
-      mv $PWD "$out/libexec/$name"
-      cd "$out/libexec/$name"
+      # sed helpers
+      escape_sed_replacement () {
+        echo "$1" | sed -e 's/[\/&]/\\&/g'
+      }
+
+      escape_sed_pattern () {
+        echo "$1" | sed -e 's/[]\/$*.^[]/\\&/g'
+      }
+
+      # Replace packageLocation for the workspace and main package.
+      sed_pattern='"packageLocation": "'$depsPath'/"'
+      sed_replace='"packageLocation": "'$app_dir'/"'
+
+      sed -E -i \
+        -e "s/$(escape_sed_pattern "$sed_pattern")/$(escape_sed_replacement "$sed_replace")/g" \
+        .pnp.cjs
 
       # Invoke a plugin internal command to setup binaries.
-      yarn nixify install-bin $out/bin
+      yarn nixify install-bin $bin_dir
 
       runHook postInstall
     '';
