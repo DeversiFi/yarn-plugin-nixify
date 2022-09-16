@@ -41,17 +41,6 @@ export default async (project: Project, cache: Cache, report: Report) => {
     return;
   }
 
-  // Sanity checks.
-  const yarnPathAbs = configuration.get(`yarnPath`);
-  let yarnPath = ppath.relative(cwd, yarnPathAbs);
-  if (yarnPath.startsWith(`../`)) {
-    yarnPath = yarnPathAbs;
-    report.reportWarning(
-      0,
-      `The Yarn path ${yarnPathAbs} is outside the project - it may not be reachable by the Nix build`
-    );
-  }
-
   const cacheFolderAbs = configuration.get(`cacheFolder`);
   let cacheFolder = ppath.relative(cwd, cacheFolderAbs);
   if (cacheFolder.startsWith(`../`)) {
@@ -81,7 +70,6 @@ export default async (project: Project, cache: Cache, report: Report) => {
     ppath.dirname(nixExprPath),
     lockfileFilename
   );
-  const yarnPathRel = ppath.relative(ppath.dirname(nixExprPath), yarnPath);
 
   // Build a list of cache entries so Nix can fetch them.
   // TODO: See if we can use Nix fetchurl for npm: dependencies.
@@ -271,7 +259,6 @@ export default async (project: Project, cache: Cache, report: Report) => {
   const projectName = ident ? structUtils.stringifyIdent(ident) : `workspace`;
   const projectExpr = renderTmpl(projectExprTmpl, {
     PROJECT_NAME: projectName,
-    YARN_PATH: yarnPathRel,
     LOCKFILE: lockfileRel,
     CACHE_FOLDER: json(cacheFolder),
     CACHE_ENTRIES: cacheEntriesCode,
