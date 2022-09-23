@@ -46,13 +46,9 @@ let
     # will follow the symlink and consider the location of the original file as
     # the projects root directory.
     cp ${packageJson} package.json
-    if [ ! -f "yarn.lock" ]; then
-      ln -s ${yarnLock} yarn.lock
-    fi
 
-    if [ ! -f ".yarnrc.yml" ]; then
-      ln -s ${yarnrcYaml} .yarnrc.yml
-    fi
+    ln -s ${yarnLock} yarn.lock
+    ln -s ${yarnrcYaml} .yarnrc.yml
 
     mkdir -p .yarn
     ln -s ${yarnPlugins} .yarn/plugins
@@ -313,7 +309,7 @@ let
         .pnp.cjs
 
       # Invoke a plugin internal command to setup binaries.
-      yarn nixify install-bin $bin_dir
+      ${yarnExe} nixify install-bin $bin_dir
 
       runHook postInstall
     '';
