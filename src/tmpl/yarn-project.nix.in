@@ -141,7 +141,6 @@ let
       cd $build_dir
 
       ${setupProjectFiles}
-      ${plugins}
 
       mkdir -p ${cacheFolder}
       YARN_CACHE_FOLDER=$(pwd)/${cacheFolder}
