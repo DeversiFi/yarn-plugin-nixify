@@ -68,7 +68,7 @@ let
     ''}
 
     ${lib.optionalString (yarnPluginsPaths != null) ''
-      YARN_PLUGINS=$YARN_PLUGINS:${yarnPluginsPaths}
+      export YARN_PLUGINS=${yarnPluginsPaths}
     ''}
     
   '';
