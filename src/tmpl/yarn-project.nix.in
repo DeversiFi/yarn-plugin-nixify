@@ -21,10 +21,14 @@ let
     path = ./.yarnrc.yml;
     name = "yarnrc.yml";
   };
-  yarnPlugins = builtins.path {
-    path = ./.yarn/plugins;
-    name = "yarnPlugins";
-  };
+  yarnPlugins = if (builtins.pathExists ./.yarn/plugins)
+  then
+    builtins.path {
+      path = ./.yarn/plugins;
+      name = "yarnPlugins";
+    }
+  else
+    null;
 
   cacheFolder = @@CACHE_FOLDER@@;
 
@@ -58,7 +62,10 @@ let
     ln -s ${yarnrcYaml} .yarnrc.yml
 
     mkdir -p .yarn
-    ln -s ${yarnPlugins} .yarn/plugins
+
+    ${lib.optionalString (yarnPlugins!= null) ''
+      ln -s ${yarnPlugins} .yarn/plugins
+    ''}
 
     ${lib.optionalString (yarnPluginsPaths != null) ''
       YARN_PLUGINS=$YARN_PLUGINS:${yarnPluginsPaths}
