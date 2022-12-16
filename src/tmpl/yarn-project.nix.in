@@ -2,8 +2,15 @@
 # Manual changes might be lost - proceed with caution!
 
 { lib, nodejs, python3, yarn-berry, stdenv, fetchurl, writeText, writeShellScriptBin, git, cacert, gnused, writeTextFile }:
-{ src, symlinkPackages ? false, overrideAttrs ? null, netrcFilePath ? null, secretsEnvVars ? null, yarnPath ? null, ... } @ args:
-
+{ src,
+  symlinkPackages ? false,
+  overrideAttrs ? null,
+  netrcFilePath ? null,
+  secretsEnvVars ? null,
+  yarnPath ? null,
+  yarnPluginsPaths ? null,
+  ... 
+} @ args:
 let
   yarnExe = if builtins.isNull yarnPath
     then "${yarn-berry}/bin/yarn"
@@ -52,6 +59,11 @@ let
 
     mkdir -p .yarn
     ln -s ${yarnPlugins} .yarn/plugins
+
+    ${lib.optionalString (yarnPluginsPaths != null) ''
+      YARN_PLUGINS=$YARN_PLUGINS:${yarnPluginsPaths}
+    ''}
+    
   '';
 
   checkSandboxPathExists = writeShellScriptBin "check-sandbox-file-exists" ''
@@ -122,6 +134,7 @@ let
       cd $build_dir
 
       ${setupProjectFiles}
+      ${plugins}
 
       mkdir -p ${cacheFolder}
       YARN_CACHE_FOLDER=$(pwd)/${cacheFolder}
