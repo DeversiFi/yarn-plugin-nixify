@@ -9,7 +9,7 @@
   secretsEnvVars ? null,
   yarnPath ? null,
   yarnPluginsPaths ? null,
-  ... 
+  ...
 } @ args:
 let
   yarnExe = if builtins.isNull yarnPath
@@ -70,7 +70,6 @@ let
     ${lib.optionalString (yarnPluginsPaths != null) ''
       export YARN_PLUGINS=${yarnPluginsPaths}
     ''}
-    
   '';
 
   checkSandboxPathExists = writeShellScriptBin "check-sandbox-file-exists" ''
@@ -78,7 +77,7 @@ let
 
     file_path=$1
 
-    if ! test -e "$file_path"
+    if ! [[ -e "$file_path" && -r "$file_path" ]]
     then
       echo >&2 "Error: $file_path does not exist or cannot be accessed due to permissions!"
       echo >&2 "  Make sure it's added to extra-sandbox-paths and that nixbld"
@@ -93,7 +92,7 @@ let
     netrc_file_path=$1
     home=$2
 
-    ${checkSandboxPathExists}/bin/check-sandbox-file-exists "$netrc_file_path"
+    ${lib.getExe checkSandboxPathExists} "$netrc_file_path"
 
     if ! test -d "$home";
     then
@@ -111,7 +110,7 @@ let
     # build a list of export statement
     then lib.concatStringsSep "\n" (lib.mapAttrsToList
       (name: path: ''
-        check-sandbox-file-exists "${path}"
+        ${lib.getExe checkSandboxPathExists} "${path}"
         export ${name}=$(cat "${path}")
       '')
       envVarNamesToPaths
@@ -162,7 +161,7 @@ let
     # We need .zip extension since without pnp will not look inside the archive.
     name = lib.strings.sanitizeDerivationName locator + ".zip";
     buildInputs = [ nodejs ];
-    nativeBuildInputs = [ git cacert linkNetrcFile checkSandboxPathExists python3 yarn-berry ];
+    nativeBuildInputs = [ git cacert linkNetrcFile python3 yarn-berry ];
     outputFilename = filename;
     outputHashMode = "flat";
     outputHashAlgo = "sha512";
