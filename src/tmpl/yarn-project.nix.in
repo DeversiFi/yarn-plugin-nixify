@@ -289,7 +289,7 @@ let
       # packageLocations within it being relative path to this files locations
       # real location, therefore it needs to be located at the root of the
       # project for relative and workspace scoped imports to work.
-      cp $depsPath/.pnp.cjs .pnp.cjs
+      cp $depsPath/.pnp.* .
 
       runHook postConfigure
     '';
