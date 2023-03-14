@@ -4,3 +4,4 @@
 /.pnp.*
 
 /dist/yarn-plugin-nixify.dev.js
+.direnv
